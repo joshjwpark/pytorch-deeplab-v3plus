@@ -9,7 +9,6 @@ class VOCSegmentation(Dataset):
     """
     PascalVoc dataset
     """
-
     def __init__(self,
                  base_dir='D:/Projects/Segmentation/VOC2012/',
                  split='train',
@@ -85,21 +84,18 @@ class VOCSegmentation(Dataset):
 
 
 if __name__ == '__main__':
-    # from dataloaders import custom_transforms as tr
-    # from dataloaders.utils import decode_segmap
+    import custom_transforms as tr
+    from utils import decode_segmap
     from torch.utils.data import DataLoader
     from torchvision import transforms
     import matplotlib.pyplot as plt
 
     composed_transforms_tr = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.Resize(512),
-        transforms.RandomRotation(15),
-        # transforms.ToTensor(),
-        transforms.ToPILImage(),
+        tr.RandomHorizontalFlip(),
+        tr.RandomSized(512),
+        tr.RandomRotate(15),
+        tr.ToTensor()
         ])
-
-
 
     voc_train = VOCSegmentation(split='train',
                                 transform=composed_transforms_tr)
@@ -112,17 +108,15 @@ if __name__ == '__main__':
             gt = sample['label'].numpy()
             tmp = np.array(gt[jj]).astype(np.uint8)
             tmp = np.squeeze(tmp, axis=0)
-            # segmap = decode_segmap(tmp, dataset='pascal')
+            segmap = decode_segmap(tmp, dataset='pascal')
             img_tmp = np.transpose(img[jj], axes=[1, 2, 0]).astype(np.uint8)
             plt.figure()
             plt.title('display')
-            # plt.subplot(211)
+            plt.subplot(211)
             plt.imshow(img_tmp)
-            # plt.subplot(212)
-            # plt.imshow(segmap)
+            plt.subplot(212)
+            plt.imshow(segmap)
 
         if ii == 1:
             break
     plt.show(block=True)
-
-

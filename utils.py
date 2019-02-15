@@ -1,44 +1,9 @@
 import os
-
 import torch
-import random
 import numpy as np
 import torch.nn as nn
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
-
-def recursive_glob(rootdir='.', suffix=''):
-    """Performs recursive glob with given suffix and rootdir
-        :param rootdir is the root directory
-        :param suffix is the suffix to be searched
-    """
-    return [os.path.join(looproot, filename)
-        for looproot, _, filenames in os.walk(rootdir)
-        for filename in filenames if filename.endswith(suffix)]
-
-def get_cityscapes_labels():
-    return np.array([
-        # [  0,   0,   0],
-        [128, 64, 128],
-        [244, 35, 232],
-        [70, 70, 70],
-        [102, 102, 156],
-        [190, 153, 153],
-        [153, 153, 153],
-        [250, 170, 30],
-        [220, 220, 0],
-        [107, 142, 35],
-        [152, 251, 152],
-        [0, 130, 180],
-        [220, 20, 60],
-        [255, 0, 0],
-        [0, 0, 142],
-        [0, 0, 70],
-        [0, 60, 100],
-        [0, 80, 100],
-        [0, 0, 230],
-        [119, 11, 32]])
 
 def get_pascal_labels():
     """Load the mapping that associates pascal classes with label colors
@@ -51,7 +16,6 @@ def get_pascal_labels():
                        [64, 0, 128], [192, 0, 128], [64, 128, 128], [192, 128, 128],
                        [0, 64, 0], [128, 64, 0], [0, 192, 0], [128, 192, 0],
                        [0, 64, 128]])
-
 
 def encode_segmap(mask):
     """Encode segmentation label images as pascal classes
@@ -68,7 +32,6 @@ def encode_segmap(mask):
         label_mask[np.where(np.all(mask == label, axis=-1))[:2]] = ii
     label_mask = label_mask.astype(int)
     return label_mask
-
 
 def decode_seg_map_sequence(label_masks, dataset='pascal'):
     rgb_masks = []
@@ -140,7 +103,6 @@ def cross_entropy2d(logit, target, ignore_index=255, weight=None, size_average=T
 
 def lr_poly(base_lr, iter_, max_iter=100, power=0.9):
     return base_lr * ((1 - float(iter_) / max_iter) ** power)
-
 
 def get_iou(pred, gt, n_classes=21):
     total_iou = 0.0
