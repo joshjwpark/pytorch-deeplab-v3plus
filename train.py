@@ -1,6 +1,5 @@
-import socket
+# Python includes
 import timeit
-from datetime import datetime
 import os
 import glob
 from collections import OrderedDict
@@ -11,140 +10,121 @@ from torch.autograd import Variable
 import torch.optim as optim
 from torchvision import transforms
 from torch.utils.data import DataLoader
-from torchvision.utils import make_grid
-
-# Tensorboard include
-from tensorboardX import SummaryWriter
+# from torchvision.utils import make_grid
 
 # Custom includes
-# from dataloaders import pascal, sbd, combine_dbs
 import pascal
 import utils
 import DeepLabV3Plus
 import custom_transforms as tr
 
 
-
+# -------------------------------------------------------------------------------
+# Initial Parameters
+# -------------------------------------------------------------------------------
 gpu_id = 0
-print('Using GPU: {} '.format(gpu_id))
-# Setting parameters
-# use_sbd = True  # Whether to use SBD dataset
-nEpochs = 20  # Number of epochs for training
-resume_epoch = 0   # Default is 0, change if want to resume
+print('Using GPU: {}'.format(gpu_id))
+nEpochs = 20
+resume_epoch = 4
+nValInterval = 3            # Run on validation set every nTestInterval epochs
+valBatch = 6                # Validation batch size
+useVal = True               # Test on validation data
+snapshot = 1                # Store a model every snapshot epochs
+backbone = 'resnet101'      # backbone of DeepLabV3Plus model
 
-p = OrderedDict()  # Parameters to include in report
-p['trainBatch'] = 6  # Training batch size
-testBatch = 6  # Testing batch size
-useTest = True  # See evolution of the test set when training
-nTestInterval = 5 # Run on test set every nTestInterval epochs
-snapshot = 10  # Store a model every snapshot epochs
-p['nAveGrad'] = 1  # Average the gradient of several iterations
-p['lr'] = 1e-7  # Learning rate
-p['wd'] = 5e-4  # Weight decay
-p['momentum'] = 0.9  # Momentum
-p['epoch_size'] = 10  # How many epochs to change learning rate
-backbone = 'resnet' # Use xception or resnet as feature extractor,
 
-save_dir_root = os.path.join(os.path.dirname(os.path.abspath(__file__)))
-exp_name = os.path.dirname(os.path.abspath(__file__)).split('/')[-1]
+# -------------------------------------------------------------------------------
+# Include in Report
+# -------------------------------------------------------------------------------
+p = OrderedDict()           # Parameters to include in report
+p['trainBatch'] = 6         # Training batch size
+p['nAveGrad'] = 1           # Average the gradient of several iterations
+p['lr'] = 1e-7              # Learning rate
+p['wd'] = 5e-4              # Weight decay
+p['momentum'] = 0.9         # Momentum
+p['epoch_size'] = 10        # How many epochs to change learning rate
+
+
+# -------------------------------------------------------------------------------
+# Load/Save Directories
+# -------------------------------------------------------------------------------
+save_directory_root = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+# exp_name = os.path.dirname(os.path.abspath(__file__)).split('/')[-1]
 
 if resume_epoch != 0:
-    runs = sorted(glob.glob(os.path.join(save_dir_root, 'run', 'run_*')))
+    runs = sorted(glob.glob(os.path.join(save_directory_root, 'run', 'run_*')))
     run_id = int(runs[-1].split('_')[-1]) if runs else 0
 else:
-    runs = sorted(glob.glob(os.path.join(save_dir_root, 'run', 'run_*')))
+    runs = sorted(glob.glob(os.path.join(save_directory_root, 'run', 'run_*')))
     run_id = int(runs[-1].split('_')[-1]) + 1 if runs else 0
 
-save_dir = os.path.join(save_dir_root, 'run', 'run_' + str(run_id))
+# save_directory = os.path.join(save_directory_root, 'run', 'run_' + str(run_id))
+# save_directory = os.path.join(save_directory_root, str(run_id))
+save_directory = save_directory_root
 
-# Network definition
-# if backbone == 'xception':
-#     net = deeplab_xception.DeepLabv3_plus(nInputChannels=3, n_classes=21, os=16, pretrained=True)
-# elif backbone == 'resnet':
-#     net = deeplab_resnet.DeepLabv3_plus(nInputChannels=3, n_classes=21, os=16, pretrained=True)
-# else:
-#     raise NotImplementedError
+
+# -------------------------------------------------------------------------------
+# Load and Initialize Data
+# -------------------------------------------------------------------------------
+transforms_train = transforms.Compose([
+    tr.FixedResize(size=(512, 512)),
+    tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    tr.ToTensor(),
+    ])
+transforms_val = transforms.Compose([
+    tr.FixedResize(size=(512, 512)),
+    tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    tr.ToTensor(),
+    ])
+
+voc_train = pascal.VOCSegmentation(split='train', transform=transforms_train)
+voc_val = pascal.VOCSegmentation(split='val', transform=transforms_val)
+
+trainloader = DataLoader(voc_train, batch_size=p['trainBatch'], shuffle=True, num_workers=0)
+valloader = DataLoader(voc_val, batch_size=valBatch, shuffle=False, num_workers=0)
+
+
+# -------------------------------------------------------------------------------
+# Initialize Network
+# -------------------------------------------------------------------------------
 net = DeepLabV3Plus.DeepLabV3_Plus(nInputChannels=3, n_classes=21, os=16, pretrained=True)
 
-modelName = 'deeplabv3plus-' + backbone + '-voc'
+modelname = 'DeepLabV3Plus-' + backbone + '-voc'
 criterion = utils.cross_entropy2d
-
-
-if resume_epoch == 0:
-    print("Training DeepLabv3+ from scratch...")
-else:
-    print("Initializing weights from: {}...".format(
-        os.path.join(save_dir, 'models', modelName + '_epoch-' + str(resume_epoch - 1) + '.pth')))
-    net.load_state_dict(
-        torch.load(os.path.join(save_dir, 'models', modelName + '_epoch-' + str(resume_epoch - 1) + '.pth'),
-                   map_location=lambda storage, loc: storage)) # Load all tensors onto the CPU
+# Select optimizer
+optimizer = optim.SGD(net.parameters(), lr=p['lr'], momentum=p['momentum'], weight_decay=p['wd'])
+p['optimizer'] = str(optimizer)
 
 if gpu_id >= 0:
-    torch.cuda.set_device(device=gpu_id)
+    torch.cuda.device(device=gpu_id)
     net.cuda()
 
+# utils.generate_param_report(os.path.join(save_directory, exp_name + '.txt'), p)
+
+num_img_train = len(trainloader)
+num_img_val = len(valloader)
+running_loss_train = 0.0
+running_loss_val = 0.0
+aveGrad = 0
+global_step = 0
+
+
+# -------------------------------------------------------------------------------
+# Train
+# -------------------------------------------------------------------------------
+if resume_epoch == 0:
+    print("Training DeepLabV3+ from scratch...")
+else:
+    print("Initializing weights from: {}...".format(
+        os.path.join(save_directory, 'models', modelname + '_epoch-' + str(resume_epoch - 1) + '.pth')))
+    net.load_state_dict(
+        torch.load(os.path.join(save_directory, 'models', modelname + '_epoch-' + str(resume_epoch - 1) + '.pth'),
+                   map_location=lambda storage, loc: storage))  # Load all tensors onto the CPU
+
 if resume_epoch != nEpochs:
-    # Logging into Tensorboard
-    log_dir = os.path.join(save_dir, 'models', datetime.now().strftime('%b%d_%H-%M-%S') + '_' + socket.gethostname())
-    writer = SummaryWriter(log_dir=log_dir)
-
-    # Use the following optimizer
-    optimizer = optim.SGD(net.parameters(), lr=p['lr'], momentum=p['momentum'], weight_decay=p['wd'])
-    p['optimizer'] = str(optimizer)
-
-    composed_transforms_tr = transforms.Compose([
-        tr.RandomSized(512),
-        tr.RandomRotate(15),
-        tr.RandomHorizontalFlip(),
-        tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        tr.ToTensor(),
-
-        # transforms.Resize(512),
-        # transforms.RandomRotation(15),
-        # transforms.RandomHorizontalFlip(),
-        # transforms.ToTensor(),
-        # transforms.ToPILImage(),
-        # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
-        ])
-
-    composed_transforms_ts = transforms.Compose([
-        tr.FixedResize(size=(512, 512)),
-        tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        tr.ToTensor(),
-
-        # transforms.Resize(size=(512, 512)),
-        # transforms.ToTensor(),
-        # transforms.ToPILImage(),
-        # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
-        ])
-
-    voc_train = pascal.VOCSegmentation(split='train', transform=composed_transforms_tr)
-    voc_val = pascal.VOCSegmentation(split='val', transform=composed_transforms_ts)
-    #
-    # if use_sbd:
-    #     print("Using SBD dataset")
-    #     sbd_train = sbd.SBDSegmentation(split=['train', 'val'], transform=composed_transforms_tr)
-    #     db_train = combine_dbs.CombineDBs([voc_train, sbd_train], excluded=[voc_val])
-    # else:
-    #     db_train = voc_train
-
-    trainloader = DataLoader(voc_train, batch_size=p['trainBatch'], shuffle=True, num_workers=0)
-    testloader = DataLoader(voc_val, batch_size=testBatch, shuffle=False, num_workers=0)
-
-    utils.generate_param_report(os.path.join(save_dir, exp_name + '.txt'), p)
-
-    num_img_tr = len(trainloader)
-    num_img_ts = len(testloader)
-    running_loss_tr = 0.0
-    running_loss_ts = 0.0
-    aveGrad = 0
-    global_step = 0
-    print("Training Network")
-
-    # --------------------------------------------------------------------------------------------------
-    # Main Training and Testing Loop
     for epoch in range(resume_epoch, nEpochs):
         start_time = timeit.default_timer()
+        print('Training...')
 
         if epoch % p['epoch_size'] == p['epoch_size'] - 1:
             learning_rate = utils.lr_poly(p['lr'], epoch, nEpochs, 0.9)
@@ -153,9 +133,11 @@ if resume_epoch != nEpochs:
 
         net.train()
         for ii, sample_batched in enumerate(trainloader):
-
             inputs, labels = sample_batched['image'], sample_batched['label']
-            # Forward-Backward of the mini-batch
+
+            # -----------------
+            # Forward Pass
+            # -----------------
             inputs, labels = Variable(inputs, requires_grad=True), Variable(labels)
             global_step += inputs.data.shape[0]
 
@@ -165,53 +147,50 @@ if resume_epoch != nEpochs:
             outputs = net.forward(inputs)
 
             loss = criterion(outputs, labels, size_average=False, batch_average=True)
-            running_loss_tr += loss.item()
+            running_loss_train += loss.item()
 
-            # Print stuff
-            if ii % num_img_tr == (num_img_tr - 1):
-                running_loss_tr = running_loss_tr / num_img_tr
-                # writer.add_scalar('data/total_loss_epoch', running_loss_tr, epoch)
+            # Print loss
+            if ii % num_img_train == (num_img_train - 1):
+                running_loss_train = running_loss_train / num_img_train
+                # writer.add_scalar('data/total_loss_epoch', running_loss_train, epoch)
                 print('[Epoch: %d, numImages: %5d]' % (epoch, ii * p['trainBatch'] + inputs.data.shape[0]))
-                print('Loss: %f' % running_loss_tr)
-                running_loss_tr = 0
+                print('Loss: %f' % running_loss_train)
+                running_loss_train = 0
                 stop_time = timeit.default_timer()
                 print("Execution time: " + str(stop_time - start_time) + "\n")
 
-            # Backward the averaged gradient
+            # -----------------
+            # Backward Pass
+            # -----------------
             loss /= p['nAveGrad']
             loss.backward()
             aveGrad += 1
 
-            # Update the weights once in p['nAveGrad'] forward passes
-            if aveGrad % p['nAveGrad'] == 0:
-                # writer.add_scalar('data/total_loss_iter', loss.item(), ii + num_img_tr * epoch)
-                optimizer.step()
-                optimizer.zero_grad()
-                aveGrad = 0
+            # -----------------
+            # Update weights
+            # -----------------
+            optimizer.step()
+            optimizer.zero_grad()
+            aveGrad = 0
 
-            # Show 10 * 3 images results each epoch
-            if ii % (num_img_tr // 10) == 0:
-                grid_image = make_grid(inputs[:3].clone().cpu().data, 3, normalize=True)
-                # writer.add_image('Image', grid_image, global_step)
-                grid_image = make_grid(utils.decode_seg_map_sequence(torch.max(outputs[:3], 1)[1].detach().cpu().numpy()), 3, normalize=False,
-                                       range=(0, 255))
-                # writer.add_image('Predicted label', grid_image, global_step)
-                grid_image = make_grid(utils.decode_seg_map_sequence(torch.squeeze(labels[:3], 1).detach().cpu().numpy()), 3, normalize=False, range=(0, 255))
-                # writer.add_image('Groundtruth label', grid_image, global_step)
+        # Save model
+        if (epoch % snapshot) == snapshot -1:
+            torch.save(net.state_dict(), os.path.join(save_directory, 'models', modelname + '_epoch-' + str(epoch) + '.pth'))
+            print("Saved model at {}\n".format(os.path.join(save_directory, 'models', modelname + '_epoch-' + str(epoch) + '.pth')))
 
-        # Save the model
-        if (epoch % snapshot) == snapshot - 1:
-            torch.save(net.state_dict(), os.path.join(save_dir, 'models', modelName + '_epoch-' + str(epoch) + '.pth'))
-            print("Save model at {}\n".format(os.path.join(save_dir, 'models', modelName + '_epoch-' + str(epoch) + '.pth')))
-
-        # One testing epoch
-        if useTest and epoch % nTestInterval == (nTestInterval - 1):
+        # ------------
+        # Validate
+        # ------------
+        if useVal and epoch % nValInterval == (nValInterval - 1):
+            print('Validating...')
             total_iou = 0.0
             net.eval()
-            for ii, sample_batched in enumerate(testloader):
+            for ii, sample_batched in enumerate(valloader):
                 inputs, labels = sample_batched['image'], sample_batched['label']
 
-                # Forward pass of the mini-batch
+                # -----------------
+                # Forward Pass
+                # -----------------
                 inputs, labels = Variable(inputs, requires_grad=True), Variable(labels)
                 if gpu_id >= 0:
                     inputs, labels = inputs.cuda(), labels.cuda()
@@ -222,23 +201,17 @@ if resume_epoch != nEpochs:
                 predictions = torch.max(outputs, 1)[1]
 
                 loss = criterion(outputs, labels, size_average=False, batch_average=True)
-                running_loss_ts += loss.item()
+                running_loss_val += loss.item()
 
                 total_iou += utils.get_iou(predictions, labels)
 
-                # Print stuff
-                if ii % num_img_ts == num_img_ts - 1:
+                # Print loss and MIoU
+                if ii % num_img_val == num_img_val - 1:
+                    miou = total_iou / (ii*valBatch + inputs.data.shape[0])
+                    running_loss_val = running_loss_val / num_img_val
 
-                    miou = total_iou / (ii * testBatch + inputs.data.shape[0])
-                    running_loss_ts = running_loss_ts / num_img_ts
-
-                    print('Validation:')
-                    print('[Epoch: %d, numImages: %5d]' % (epoch, ii * testBatch + inputs.data.shape[0]))
-                    # writer.add_scalar('data/test_loss_epoch', running_loss_ts, epoch)
-                    # writer.add_scalar('data/test_miour', miou, epoch)
-                    print('Loss: %f' % running_loss_ts)
+                    print('Validation')
+                    print('[Epoch: %d, numImages: %5d]' % (epoch, ii * valBatch + inputs.data.shape[0]))
+                    print('Loss: %f' % running_loss_val)
                     print('MIoU: %f\n' % miou)
-                    running_loss_ts = 0
-
-
-    # writer.close()
+                    running_loss_val = 0
